@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict
 
-from irodori_tts.output_settings import load_settings, save_settings, choose_folder, prepare_output_directory, write_metadata
+from irodori_tts.output_settings import load_settings, save_settings, choose_folder, prepare_output_directory, write_metadata, read_metadata, restored_values
 from datetime import datetime
 from pathlib import Path
 
@@ -367,6 +367,7 @@ def _run_generation(
         if save_txt:
             write_metadata(out_path, {
                 "created_at": now.isoformat(),
+                "source_checkpoint": checkpoint,
                 "candidate_index": i,
                 "sample_rate": result.sample_rate,
                 "seed_used": result.used_seed,
@@ -403,6 +404,23 @@ def _clear_runtime_cache() -> str:
     return "cleared loaded model from memory"
 
 
+IMPORT_FIELDS = ['checkpoint', 'text', 'num_steps', 'num_candidates', 'seed_raw', 'seconds_raw', 'duration_scale', 't_schedule_mode', 'sway_coeff', 'cfg_guidance_mode', 'cfg_scale_text', 'cfg_scale_speaker', 'cfg_scale_raw', 'cfg_min_t', 'cfg_max_t', 'context_kv_cache', 'truncation_factor_raw', 'rescale_k_raw', 'rescale_sigma_raw', 'speaker_kv_scale_raw', 'lora_adapter_raw', 'speaker_kv_min_t_raw', 'speaker_kv_max_layers_raw']
+
+
+def _load_generation_settings(path: str | None) -> tuple:
+    try:
+        data = read_metadata(path)
+        values = restored_values(data, IMPORT_FIELDS)
+    except (OSError, ValueError) as exc:
+        raise gr.Error(str(exc)) from exc
+    updates = [gr.update(value=value) if present else gr.update() for present, value in values]
+    reference = data["generation"].get("ref_wavs") or data["generation"].get("ref_embed")
+    message = "生成条件を復元しました。デバイス・精度は現在の設定を維持します。"
+    if reference:
+        message += " 参照音声・話者埋め込みは自動で読み込みません。必要なファイルを再指定してください。"
+    return (*updates, message)
+
+
 def build_ui() -> gr.Blocks:
     default_checkpoint = _default_checkpoint()
     default_model_device = _default_model_device()
@@ -413,7 +431,7 @@ def build_ui() -> gr.Blocks:
 
     with gr.Blocks(title="Irodori-TTS Gradio | MOD") as demo:
         gr.Markdown("# Irodori-TTS Inference (Cached Runtime) — MOD")
-        gr.Markdown("**非公式カスタマイズ · MOD v1.0**  ｜  出力フォルダ指定・日付別保存・生成条件TXT保存に対応")
+        gr.Markdown("**非公式カスタマイズ · MOD v1.1**  ｜  出力フォルダ指定・日付別保存・生成条件TXT保存・読み込みに対応")
         gr.Markdown(
             "Reference-audio cloning / Speaker Inversion UI. "
             "Irodori-TTS-v4.1-Small is used by default; unchanged settings reuse the cached runtime."
@@ -584,6 +602,17 @@ def build_ui() -> gr.Blocks:
                     lambda folder, dated, txt: save_settings("gradio_outputs", folder, dated, txt),
                     inputs=[output_folder, date_subfolder, save_txt], outputs=[], queue=False,
                 )
+
+        with gr.Accordion("Load Generation Settings / 生成条件の読み込み", open=False):
+            settings_txt = gr.File(label="生成条件TXT", file_types=[".txt"], type="filepath")
+            import_settings_btn = gr.Button("Load Settings / 生成条件を復元")
+            import_status = gr.Textbox(label="読み込み結果", interactive=False)
+            gr.Markdown("Text・Seed・モデル・生成パラメータを復元します。参照音声と話者埋め込みは再指定してください。")
+        import_settings_btn.click(
+            _load_generation_settings,
+            inputs=[settings_txt],
+            outputs=[checkpoint, text, num_steps, num_candidates, seed_raw, seconds_raw, duration_scale, t_schedule_mode, sway_coeff, cfg_guidance_mode, cfg_scale_text, cfg_scale_speaker, cfg_scale_raw, cfg_min_t, cfg_max_t, context_kv_cache, truncation_factor_raw, rescale_k_raw, rescale_sigma_raw, speaker_kv_scale_raw, lora_adapter_raw, speaker_kv_min_t_raw, speaker_kv_max_layers_raw, import_status],
+        )
 
         generate_btn = gr.Button("Generate", variant="primary")
 

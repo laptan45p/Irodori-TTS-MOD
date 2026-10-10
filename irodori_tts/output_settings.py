@@ -78,3 +78,62 @@ def choose_folder(current: str) -> str:
     finally:
         if root is not None:
             root.destroy()
+
+
+def read_metadata(path: str | None) -> dict:
+    """Read our UTF-8 JSON sidecar without accessing referenced local files."""
+    if not path:
+        raise ValueError("生成条件のTXTを選択してください。")
+    source = Path(path)
+    if source.stat().st_size > 2 * 1024 * 1024:
+        raise ValueError("TXTが大きすぎます（上限2 MiB）。")
+    try:
+        data = json.loads(source.read_text(encoding="utf-8-sig"))
+    except (UnicodeError, ValueError) as exc:
+        raise ValueError("このMODが保存したJSON形式のTXTを選択してください。") from exc
+    if not isinstance(data, dict) or not isinstance(data.get("generation"), dict):
+        raise ValueError("generationを含む生成条件TXTではありません。")
+    if not isinstance(data.get("runtime", {}), dict):
+        raise ValueError("runtimeの形式が不正です。")
+    for key, value in data["generation"].items():
+        if value is not None and not isinstance(value, (str, int, float, bool, list)):
+            raise ValueError(f"生成条件の形式が不正です: {key}")
+    return data
+
+
+def restored_values(data: dict, names: list[str]) -> list[tuple[bool, object]]:
+    """Return presence/value pairs, leaving absent fields unchanged."""
+    generation = data["generation"]
+    runtime = data.get("runtime", {})
+    result = []
+    for name in names:
+        key = name.removesuffix("_raw")
+        if name == "checkpoint":
+            value = data.get("source_checkpoint", runtime.get("checkpoint"))
+            present = value is not None
+        elif name == "seed_raw" and "seed_used" in data:
+            value, present = data["seed_used"], True
+        else:
+            present = key in generation
+            value = generation.get(key)
+        if present:
+            if name.endswith("_raw") or name in ("num_steps", "caption"):
+                if value is not None and not isinstance(value, (str, int, float)):
+                    raise ValueError(f"生成条件の型が不正です: {key}")
+                value = "" if value is None else str(value)
+            elif name == "context_kv_cache":
+                if not isinstance(value, bool):
+                    raise ValueError("context_kv_cacheは真偽値で指定してください。")
+            elif name in ("checkpoint", "text", "t_schedule_mode", "cfg_guidance_mode"):
+                if not isinstance(value, str):
+                    raise ValueError(f"生成条件の型が不正です: {key}")
+            elif not isinstance(value, (int, float)) or isinstance(value, bool):
+                raise ValueError(f"生成条件の型が不正です: {key}")
+            if key == "num_candidates" and (not isinstance(value, int) or not 1 <= value <= 32):
+                raise ValueError("候補数は1〜32です。")
+            if key == "t_schedule_mode" and value not in ("linear", "sway"):
+                raise ValueError("t_schedule_modeが不正です。")
+            if key == "cfg_guidance_mode" and value not in ("independent", "joint", "alternating"):
+                raise ValueError("cfg_guidance_modeが不正です。")
+        result.append((present, value))
+    return result
